@@ -1,0 +1,80 @@
+import pandas as pd
+import numpy as np
+from sklearn.linear_model import LinearRegression, Ridge
+from sklearn.model_selection import train_test_split
+from xgboost import XGBRegressor
+import pickle
+import os
+
+DATA_FILE = 'household_power_consumption.txt'
+MODEL_TARGETS = ['Global_active_power', 'Sub_metering_1', 'Sub_metering_2', 'Sub_metering_3']
+MODEL_TYPES = ['lin', 'ridge', 'xgb']
+
+def load_and_prepare_data(sample_size=5000):
+    chunks = pd.read_csv(
+        DATA_FILE,
+        sep=';',
+        chunksize=50000,
+        low_memory=False
+    )
+
+    sampled_data = []
+    total_rows = 0
+
+    for chunk in chunks:
+        chunk.replace('?', np.nan, inplace=True)
+        chunk.dropna(inplace=True)
+        chunk['datetime'] = pd.to_datetime(chunk['Date'] + ' ' + chunk['Time'], dayfirst=True)
+        chunk.drop(['Date', 'Time'], axis=1, inplace=True)
+
+        for col in chunk.columns:
+            if col != 'datetime':
+                chunk[col] = pd.to_numeric(chunk[col], errors='coerce')
+        chunk.dropna(inplace=True)
+
+        chunk['datetime'] = chunk['datetime'].astype('int64') // 10**9
+
+        total_rows += len(chunk)
+        sample_fraction = min(sample_size / total_rows, 1.0) if total_rows > 0 else 1.0
+        sampled_chunk = chunk.sample(frac=sample_fraction, random_state=42) if sample_fraction < 1 else chunk
+        sampled_data.append(sampled_chunk)
+
+        if sum(len(df) for df in sampled_data) >= sample_size:
+            break
+
+    data = pd.concat(sampled_data, axis=0)
+    if len(data) > sample_size:
+        data = data.sample(n=sample_size, random_state=42)
+    return data
+
+def train_and_save_models(data):
+    features = ['datetime', 'Global_reactive_power', 'Voltage', 'Global_intensity']
+    X = data[features]
+
+    for target in MODEL_TARGETS:
+        y = data[target]
+        X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.3, random_state=0)
+
+        lin_model = LinearRegression()
+        lin_model.fit(X_train, y_train)
+        pickle.dump(lin_model, open(f'{target}_lin.pkl', 'wb'))
+
+        ridge_model = Ridge()
+        ridge_model.fit(X_train, y_train)
+        pickle.dump(ridge_model, open(f'{target}_ridge.pkl', 'wb'))
+
+        xgb_model = XGBRegressor(n_estimators=30, max_depth=2, random_state=42)
+        xgb_model.fit(X_train, y_train)
+        pickle.dump(xgb_model, open(f'{target}_xgb.pkl', 'wb'))
+
+        print(f"Saved models for {target}")
+
+if __name__ == '__main__':
+    if not os.path.exists(DATA_FILE):
+        print(f"Data file '{DATA_FILE}' not found. Please ensure it's in the current directory.")
+    else:
+        print("Loading and preparing data...")
+        data = load_and_prepare_data()
+        print("Training and saving models...")
+        train_and_save_models(data)
+        print("✅ All models trained and saved successfully.")
