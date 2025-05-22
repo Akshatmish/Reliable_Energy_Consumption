@@ -1,8 +1,7 @@
-Flask==2.3.2
-pandas==2.2.3
-numpy==2.2.3
-scikit-learn==1.5.2
-xgboost==2.1.4
-gunicorn==22.0.0
-asgiref==3.8.1
-uvicorn==0.30.6
+flask==2.3.3
+pandas==2.0.3
+numpy==1.23.5
+scikit-learn==1.2.2
+xgboost==1.7.5
+gunicorn==21.2.0
+requests==2.31.0
