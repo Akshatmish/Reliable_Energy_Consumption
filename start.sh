@@ -1,2 +1,2 @@
 #!/bin/bash
-gunicorn -w 2 -k sync app:app
+gunicorn -w 1 -k sync --bind 0.0.0.0:$PORT --timeout 120 app:app
