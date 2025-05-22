@@ -11,6 +11,7 @@ from datetime import datetime
 import pickle
 import logging
 import requests
+import sys
 
 # Configure logging for debugging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -67,9 +68,13 @@ def load_data(sample_size=5000, chunksize=100000):
         return cached_data
 
     data_path = os.path.join(os.path.dirname(__file__), 'household_power_consumption.txt')
-    # Optionally download dataset if not present
+    # Download dataset if not present (uncomment and provide URL)
     # data_url = 'https://your-cloud-storage-url/household_power_consumption.txt'
     # download_file(data_url, data_path)
+
+    if not os.path.exists(data_path):
+        logger.error(f"Dataset not found at {data_path}")
+        return None
 
     try:
         # Define date format for parsing
@@ -162,15 +167,25 @@ def train_and_save_models():
 def load_models():
     global models
     try:
-        # Optionally download model files if not present
+        # Download model files if not present (uncomment and provide URLs)
         # model_urls = {
         #     'Global_active_power_lin.pkl': 'https://your-cloud-storage-url/Global_active_power_lin.pkl',
-        #     # Add URLs for all 12 model files
+        #     'Global_active_power_ridge.pkl': 'https://your-cloud-storage-url/Global_active_power_ridge.pkl',
+        #     'Global_active_power_xgb.pkl': 'https://your-cloud-storage-url/Global_active_power_xgb.pkl',
+        #     'Sub_metering_1_lin.pkl': 'https://your-cloud-storage-url/Sub_metering_1_lin.pkl',
+        #     'Sub_metering_1_ridge.pkl': 'https://your-cloud-storage-url/Sub_metering_1_ridge.pkl',
+        #     'Sub_metering_1_xgb.pkl': 'https://your-cloud-storage-url/Sub_metering_1_xgb.pkl',
+        #     'Sub_metering_2_lin.pkl': 'https://your-cloud-storage-url/Sub_metering_2_lin.pkl',
+        #     'Sub_metering_2_ridge.pkl': 'https://your-cloud-storage-url/Sub_metering_2_ridge.pkl',
+        #     'Sub_metering_2_xgb.pkl': 'https://your-cloud-storage-url/Sub_metering_2_xgb.pkl',
+        #     'Sub_metering_3_lin.pkl': 'https://your-cloud-storage-url/Sub_metering_3_lin.pkl',
+        #     'Sub_metering_3_ridge.pkl': 'https://your-cloud-storage-url/Sub_metering_3_ridge.pkl',
+        #     'Sub_metering_3_xgb.pkl': 'https://your-cloud-storage-url/Sub_metering_3_xgb.pkl',
         # }
         # for file_name, url in model_urls.items():
         #     download_file(url, os.path.join(os.path.dirname(__file__), file_name))
 
-        # Check if model files exist, if not, train and save them
+        # Check if model files exist
         for target in models.keys():
             model_files = {
                 'lin': os.path.join(os.path.dirname(__file__), f'{target}_lin.pkl'),
@@ -178,8 +193,9 @@ def load_models():
                 'xgb': os.path.join(os.path.dirname(__file__), f'{target}_xgb.pkl')
             }
             if not all(os.path.exists(path) for path in model_files.values()):
-                logger.info(f"Model files for {target} not found. Training new models...")
+                logger.info(f"Model files for {target} not found. Attempting to train new models...")
                 if not train_and_save_models():
+                    logger.error(f"Failed to train models for {target}")
                     return False
 
         # Load the models
@@ -193,6 +209,16 @@ def load_models():
     except Exception as e:
         logger.error(f"Error loading models: {str(e)}")
         return False
+
+# Initialize models at startup
+try:
+    init_db()
+    if not load_models():
+        logger.error("Application startup failed: Models not initialized")
+        sys.exit(1)
+except Exception as e:
+    logger.error(f"Startup error: {str(e)}")
+    sys.exit(1)
 
 # Debug endpoint to check file and model status
 @app.route('/debug')
@@ -238,6 +264,7 @@ def predict():
             predictions = {}
             for target in models.keys():
                 if models[target]['lin'] is None:
+                    logger.error(f"Model for {target} (lin) is not initialized")
                     return render_template('error.html', message="Models not initialized")
                 predictions[target] = {
                     'lin': float(models[target]['lin'].predict(input_df)[0]),
@@ -254,6 +281,7 @@ def predict():
             
             return render_template('predict.html', total_power=total_power, percentages=percentages, input_data=input_data, pd=pd)
         except Exception as e:
+            logger.error(f"Prediction error: {str(e)}")
             return render_template('error.html', message=f"Prediction error: {str(e)}")
     return render_template('predict.html')
 
@@ -271,6 +299,7 @@ def compare():
     try:
         for target in models.keys():
             if models[target]['lin'] is None:
+                logger.error(f"Model for {target} (lin) is not initialized")
                 return render_template('error.html', message="Models not initialized")
                 
             y = data[target]
@@ -295,6 +324,7 @@ def compare():
             }
         return render_template('compare.html', metrics=metrics)
     except Exception as e:
+        logger.error(f"Comparison error: {str(e)}")
         return render_template('error.html', message=f"Comparison error: {str(e)}")
 
 # Review page
@@ -330,8 +360,4 @@ def error():
     return render_template('error.html', message=message)
 
 if __name__ == '__main__':
-    init_db()
-    if not load_models():
-        logger.error("Failed to initialize application due to model loading failure.")
-        exit(1)
     app.run(debug=False, host='0.0.0.0', port=5000, threaded=False, processes=1)
