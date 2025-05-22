@@ -5,12 +5,22 @@ from sklearn.model_selection import train_test_split
 from xgboost import XGBRegressor
 import pickle
 import os
+import logging
+
+# Configure logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
 
 DATA_FILE = 'household_power_consumption.txt'
 MODEL_TARGETS = ['Global_active_power', 'Sub_metering_1', 'Sub_metering_2', 'Sub_metering_3']
 MODEL_TYPES = ['lin', 'ridge', 'xgb']
 
 def load_and_prepare_data(sample_size=5000):
+    if not os.path.exists(DATA_FILE):
+        logger.error(f"Data file '{DATA_FILE}' not found. Please ensure it's in the current directory.")
+        raise FileNotFoundError(f"Data file '{DATA_FILE}' not found")
+
+    logger.info("Loading data in chunks...")
     chunks = pd.read_csv(
         DATA_FILE,
         sep=';',
@@ -22,9 +32,18 @@ def load_and_prepare_data(sample_size=5000):
     total_rows = 0
 
     for chunk in chunks:
+        logger.info(f"Processing chunk with {len(chunk)} rows...")
         chunk.replace('?', np.nan, inplace=True)
         chunk.dropna(inplace=True)
-        chunk['datetime'] = pd.to_datetime(chunk['Date'] + ' ' + chunk['Time'], dayfirst=True)
+        # Explicitly specify date format
+        try:
+            chunk['datetime'] = pd.to_datetime(
+                chunk['Date'] + ' ' + chunk['Time'],
+                format='%d/%m/%Y %H:%M:%S'
+            )
+        except Exception as e:
+            logger.error(f"Error parsing datetime: {str(e)}")
+            raise
         chunk.drop(['Date', 'Time'], axis=1, inplace=True)
 
         for col in chunk.columns:
@@ -45,6 +64,8 @@ def load_and_prepare_data(sample_size=5000):
     data = pd.concat(sampled_data, axis=0)
     if len(data) > sample_size:
         data = data.sample(n=sample_size, random_state=42)
+    
+    logger.info(f"Loaded dataset with shape: {data.shape}")
     return data
 
 def train_and_save_models(data):
@@ -52,29 +73,41 @@ def train_and_save_models(data):
     X = data[features]
 
     for target in MODEL_TARGETS:
+        logger.info(f"Training models for target: {target}")
+        if target not in data.columns:
+            logger.error(f"Target column '{target}' not found in dataset")
+            raise ValueError(f"Target column '{target}' not found")
+
         y = data[target]
         X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.3, random_state=0)
 
+        # Train Linear Regression
         lin_model = LinearRegression()
         lin_model.fit(X_train, y_train)
-        pickle.dump(lin_model, open(f'{target}_lin.pkl', 'wb'))
+        lin_path = f'{target}_lin.pkl'
+        pickle.dump(lin_model, open(lin_path, 'wb'))
+        logger.info(f"Saved Linear Regression model to {lin_path}")
 
+        # Train Ridge Regression
         ridge_model = Ridge()
         ridge_model.fit(X_train, y_train)
-        pickle.dump(ridge_model, open(f'{target}_ridge.pkl', 'wb'))
+        ridge_path = f'{target}_ridge.pkl'
+        pickle.dump(ridge_model, open(ridge_path, 'wb'))
+        logger.info(f"Saved Ridge Regression model to {ridge_path}")
 
+        # Train XGBoost
         xgb_model = XGBRegressor(n_estimators=30, max_depth=2, random_state=42)
         xgb_model.fit(X_train, y_train)
-        pickle.dump(xgb_model, open(f'{target}_xgb.pkl', 'wb'))
-
-        print(f"Saved models for {target}")
+        xgb_path = f'{target}_xgb.pkl'
+        pickle.dump(xgb_model, open(xgb_path, 'wb'))
+        logger.info(f"Saved XGBoost model to {xgb_path}")
 
 if __name__ == '__main__':
-    if not os.path.exists(DATA_FILE):
-        print(f"Data file '{DATA_FILE}' not found. Please ensure it's in the current directory.")
-    else:
-        print("Loading and preparing data...")
+    try:
+        logger.info("Starting model training process...")
         data = load_and_prepare_data()
-        print("Training and saving models...")
         train_and_save_models(data)
-        print("✅ All models trained and saved successfully.")
+        logger.info("✅ All models trained and saved successfully.")
+    except Exception as e:
+        logger.error(f"Training failed: {str(e)}")
+        raise
