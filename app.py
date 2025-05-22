@@ -3,12 +3,17 @@ import pandas as pd
 import numpy as np
 from sklearn.model_selection import train_test_split
 from sklearn.linear_model import LinearRegression, Ridge
-from xgboost import XGBRegressor
 from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
+from xgboost import XGBRegressor
 import os
 import sqlite3
 from datetime import datetime
 import pickle
+import logging
+
+# Configure logging for debugging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
 
 # Initialize Flask app with minimal workers to reduce memory usage
 app = Flask(__name__, template_folder='templates', static_folder='static')
@@ -26,26 +31,37 @@ cached_data = None
 
 # Database setup for reviews
 def init_db():
-    conn = sqlite3.connect('reviews.db')
-    c = conn.cursor()
-    c.execute('''CREATE TABLE IF NOT EXISTS reviews
-                 (id INTEGER PRIMARY KEY, username TEXT, review TEXT, rating INTEGER, timestamp TEXT)''')
-    conn.commit()
-    conn.close()
+    try:
+        conn = sqlite3.connect('reviews.db')
+        c = conn.cursor()
+        c.execute('''CREATE TABLE IF NOT EXISTS reviews
+                     (id INTEGER PRIMARY KEY, username TEXT, review TEXT, rating INTEGER, timestamp TEXT)''')
+        conn.commit()
+        conn.close()
+        logger.info("Database initialized successfully")
+    except Exception as e:
+        logger.error(f"Error initializing database: {str(e)}")
+        raise
 
 # Load and cache data using chunks to reduce memory usage
 def load_data(sample_size=10000, chunksize=100000):
     global cached_data
     if cached_data is not None:
+        logger.info("Returning cached data")
         return cached_data
 
     try:
-        # Read the dataset in chunks to avoid loading the entire file into memory
-        chunks = pd.read_csv('household_power_consumption.txt', sep=';',
-                             parse_dates={'datetime': ['Date', 'Time']},
-                             infer_datetime_format=True,
-                             low_memory=False,
-                             chunksize=chunksize)
+        # Define date format for parsing
+        date_format = '%d/%m/%Y %H:%M:%S'
+        # Read the dataset in chunks with explicit date format
+        chunks = pd.read_csv(
+            'household_power_consumption.txt',
+            sep=';',
+            parse_dates={'datetime': ['Date', 'Time']},
+            date_format=date_format,
+            low_memory=False,
+            chunksize=chunksize
+        )
 
         # Process chunks and sample
         sampled_data = []
@@ -71,44 +87,55 @@ def load_data(sample_size=10000, chunksize=100000):
             data = data.sample(n=sample_size, random_state=42)
 
         cached_data = data
+        logger.info(f"Loaded and cached dataset with shape: {data.shape}")
         return data
     except Exception as e:
-        print(f"Error loading data: {e}")
+        logger.error(f"Error loading data: {str(e)}")
         return None
 
 # Train and save models if they don't exist (optimized for memory)
 def train_and_save_models():
     data = load_data(sample_size=5000)  # Use a smaller sample for training
     if data is None:
-        print("Cannot train models: Data loading failed.")
+        logger.error("Cannot train models: Data loading failed.")
         return False
 
     features = ['datetime', 'Global_reactive_power', 'Voltage', 'Global_intensity']
     X = data[features]
     
-    for target in models.keys():
-        y = data[target]
-        X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.3, random_state=0)
+    try:
+        for target in models.keys():
+            y = data[target]
+            X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.3, random_state=0)
 
-        # Train Linear Regression
-        lin_model = LinearRegression()
-        lin_model.fit(X_train, y_train)
-        with open(f'{target}_lin.pkl', 'wb') as f:
-            pickle.dump(lin_model, f)
+            # Train Linear Regression
+            lin_model = LinearRegression()
+            lin_model.fit(X_train, y_train)
+            lin_path = os.path.join(os.path.dirname(__file__), f'{target}_lin.pkl')
+            with open(lin_path, 'wb') as f:
+                pickle.dump(lin_model, f)
+            logger.info(f"Saved Linear Regression model for {target} to {lin_path}")
 
-        # Train Ridge Regression
-        ridge_model = Ridge()
-        ridge_model.fit(X_train, y_train)
-        with open(f'{target}_ridge.pkl', 'wb') as f:
-            pickle.dump(ridge_model, f)
+            # Train Ridge Regression
+            ridge_model = Ridge()
+            ridge_model.fit(X_train, y_train)
+            ridge_path = os.path.join(os.path.dirname(__file__), f'{target}_ridge.pkl')
+            with open(ridge_path, 'wb') as f:
+                pickle.dump(ridge_model, f)
+            logger.info(f"Saved Ridge Regression model for {target} to {ridge_path}")
 
-        # Train XGBoost with further reduced complexity
-        xgb_model = XGBRegressor(n_estimators=30, max_depth=2, random_state=42)  # Further reduced complexity
-        xgb_model.fit(X_train, y_train)
-        with open(f'{target}_xgb.pkl', 'wb') as f:
-            pickle.dump(xgb_model, f)
+            # Train XGBoost with reduced complexity
+            xgb_model = XGBRegressor(n_estimators=30, max_depth=2, random_state=42)
+            xgb_model.fit(X_train, y_train)
+            xgb_path = os.path.join(os.path.dirname(__file__), f'{target}_xgb.pkl')
+            with open(xgb_path, 'wb') as f:
+                pickle.dump(xgb_model, f)
+            logger.info(f"Saved XGBoost model for {target} to {xgb_path}")
 
-    return True
+        return True
+    except Exception as e:
+        logger.error(f"Error training models: {str(e)}")
+        return False
 
 # Load pre-trained models
 def load_models():
@@ -116,19 +143,26 @@ def load_models():
     try:
         # Check if model files exist, if not, train and save them
         for target in models.keys():
-            if not all(os.path.exists(f'{target}_{model}.pkl') for model in ['lin', 'ridge', 'xgb']):
-                print(f"Model files for {target} not found. Training new models...")
+            model_files = {
+                'lin': os.path.join(os.path.dirname(__file__), f'{target}_lin.pkl'),
+                'ridge': os.path.join(os.path.dirname(__file__), f'{target}_ridge.pkl'),
+                'xgb': os.path.join(os.path.dirname(__file__), f'{target}_xgb.pkl')
+            }
+            if not all(os.path.exists(path) for path in model_files.values()):
+                logger.info(f"Model files for {target} not found. Training new models...")
                 if not train_and_save_models():
                     return False
 
         # Load the models
         for target in models.keys():
-            models[target]['lin'] = pickle.load(open(f'{target}_lin.pkl', 'rb'))
-            models[target]['ridge'] = pickle.load(open(f'{target}_ridge.pkl', 'rb'))
-            models[target]['xgb'] = pickle.load(open(f'{target}_xgb.pkl', 'rb'))
+            models[target]['lin'] = pickle.load(open(os.path.join(os.path.dirname(__file__), f'{target}_lin.pkl'), 'rb'))
+            models[target]['ridge'] = pickle.load(open(os.path.join(os.path.dirname(__file__), f'{target}_ridge.pkl'), 'rb'))
+            models[target]['xgb'] = pickle.load(open(os.path.join(os.path.dirname(__file__), f'{target}_xgb.pkl'), 'rb'))
+            logger.info(f"Loaded models for {target}")
+        logger.info("All models loaded successfully")
         return True
     except Exception as e:
-        print(f"Error loading models: {e}")
+        logger.error(f"Error loading models: {str(e)}")
         return False
 
 # Home page
@@ -226,30 +260,35 @@ def compare():
 # Review page
 @app.route('/reviews', methods=['GET', 'POST'])
 def reviews():
-    conn = sqlite3.connect('reviews.db')
-    c = conn.cursor()
-    
-    if request.method == 'POST':
-        username = request.form['username']
-        review = request.form['review']
-        rating = int(request.form['rating'])
-        timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    try:
+        conn = sqlite3.connect('reviews.db')
+        c = conn.cursor()
         
-        c.execute("INSERT INTO reviews (username, review, rating, timestamp) VALUES (?, ?, ?, ?)",
-                  (username, review, rating, timestamp))
-        conn.commit()
-    
-    c.execute("SELECT * FROM reviews ORDER BY timestamp DESC")
-    reviews = c.fetchall()
-    conn.close()
-    
-    return render_template('reviews.html', reviews=reviews)
+        if request.method == 'POST':
+            username = request.form['username']
+            review = request.form['review']
+            rating = int(request.form['rating'])
+            timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            
+            c.execute("INSERT INTO reviews (username, review, rating, timestamp) VALUES (?, ?, ?, ?)",
+                      (username, review, rating, timestamp))
+            conn.commit()
+        
+        c.execute("SELECT * FROM reviews ORDER BY timestamp DESC")
+        reviews = c.fetchall()
+        conn.close()
+        
+        return render_template('reviews.html', reviews=reviews)
+    except Exception as e:
+        logger.error(f"Error handling reviews: {str(e)}")
+        return render_template('error.html', message=f"Reviews error: {str(e)}")
 
 # Error template
 @app.route('/error')
 def error():
     message = request.args.get('message', 'An error occurred')
-    return render_template('error.html', message=message)
+    return render Ascending
+render_template('error.html', message=message)
 
 if __name__ == '__main__':
     init_db()
@@ -257,12 +296,4 @@ if __name__ == '__main__':
         # Run Flask with a single worker to minimize memory usage
         app.run(debug=True, host='0.0.0.0', port=5000, threaded=False, processes=1)
     else:
-        print("Failed to initialize application.")
-
-
-
-
-
-
-
-
+        logger.error("Failed to initialize application.")
