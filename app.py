@@ -10,12 +10,13 @@ import sqlite3
 from datetime import datetime
 import pickle
 import logging
+import requests
 
 # Configure logging for debugging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-# Initialize Flask app with minimal workers to reduce memory usage
+# Initialize Flask app
 app = Flask(__name__, template_folder='templates', static_folder='static')
 
 # Global variables for models
@@ -43,19 +44,39 @@ def init_db():
         logger.error(f"Error initializing database: {str(e)}")
         raise
 
+# Download files from cloud if needed
+def download_file(url, destination):
+    if not os.path.exists(destination):
+        logger.info(f"Downloading {destination} from {url}")
+        try:
+            response = requests.get(url, stream=True)
+            response.raise_for_status()
+            with open(destination, 'wb') as f:
+                for chunk in response.iter_content(chunk_size=8192):
+                    f.write(chunk)
+            logger.info(f"{destination} downloaded successfully")
+        except Exception as e:
+            logger.error(f"Error downloading {destination}: {str(e)}")
+            raise
+
 # Load and cache data using chunks to reduce memory usage
-def load_data(sample_size=10000, chunksize=100000):
+def load_data(sample_size=5000, chunksize=100000):
     global cached_data
     if cached_data is not None:
         logger.info("Returning cached data")
         return cached_data
+
+    data_path = os.path.join(os.path.dirname(__file__), 'household_power_consumption.txt')
+    # Optionally download dataset if not present
+    # data_url = 'https://your-cloud-storage-url/household_power_consumption.txt'
+    # download_file(data_url, data_path)
 
     try:
         # Define date format for parsing
         date_format = '%d/%m/%Y %H:%M:%S'
         # Read the dataset in chunks with explicit date format
         chunks = pd.read_csv(
-            'household_power_consumption.txt',
+            data_path,
             sep=';',
             parse_dates={'datetime': ['Date', 'Time']},
             date_format=date_format,
@@ -93,9 +114,9 @@ def load_data(sample_size=10000, chunksize=100000):
         logger.error(f"Error loading data: {str(e)}")
         return None
 
-# Train and save models if they don't exist (optimized for memory)
+# Train and save models if they don't exist
 def train_and_save_models():
-    data = load_data(sample_size=5000)  # Use a smaller sample for training
+    data = load_data(sample_size=5000)
     if data is None:
         logger.error("Cannot train models: Data loading failed.")
         return False
@@ -141,6 +162,14 @@ def train_and_save_models():
 def load_models():
     global models
     try:
+        # Optionally download model files if not present
+        # model_urls = {
+        #     'Global_active_power_lin.pkl': 'https://your-cloud-storage-url/Global_active_power_lin.pkl',
+        #     # Add URLs for all 12 model files
+        # }
+        # for file_name, url in model_urls.items():
+        #     download_file(url, os.path.join(os.path.dirname(__file__), file_name))
+
         # Check if model files exist, if not, train and save them
         for target in models.keys():
             model_files = {
@@ -164,6 +193,17 @@ def load_models():
     except Exception as e:
         logger.error(f"Error loading models: {str(e)}")
         return False
+
+# Debug endpoint to check file and model status
+@app.route('/debug')
+def debug():
+    model_files = {f'{target}_{model}.pkl' for target in models.keys() for model in ['lin', 'ridge', 'xgb']}
+    file_status = {file: os.path.exists(os.path.join(os.path.dirname(__file__), file)) for file in model_files}
+    file_status['dataset'] = os.path.exists(os.path.join(os.path.dirname(__file__), 'household_power_consumption.txt'))
+    return jsonify({
+        'model_initialized': {target: all(model is not None for model in models[target].values()) for target in models.keys()},
+        'file_status': file_status
+    })
 
 # Home page
 @app.route('/')
@@ -287,13 +327,11 @@ def reviews():
 @app.route('/error')
 def error():
     message = request.args.get('message', 'An error occurred')
-    return render Ascending
-render_template('error.html', message=message)
+    return render_template('error.html', message=message)
 
 if __name__ == '__main__':
     init_db()
-    if load_models():
-        # Run Flask with a single worker to minimize memory usage
-        app.run(debug=True, host='0.0.0.0', port=5000, threaded=False, processes=1)
-    else:
-        logger.error("Failed to initialize application.")
+    if not load_models():
+        logger.error("Failed to initialize application due to model loading failure.")
+        exit(1)
+    app.run(debug=False, host='0.0.0.0', port=5000, threaded=False, processes=1)
